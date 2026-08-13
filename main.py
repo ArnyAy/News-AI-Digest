@@ -1,4 +1,56 @@
-def generate_ai_post(news_item):
+import os
+import json
+import requests
+import feedparser
+from urllib.parse import quote
+
+# ---------------------------------------------------------
+# КОНФИГУРАЦИЯ И ИСТОЧНИКИ
+# ---------------------------------------------------------
+RSS_FEEDS = [
+    "https://techcrunch.com/category/artificial-intelligence/feed/",
+    "https://www.theverge.com/rss/ai-artificial-intelligence/index.xml",
+    "https://habr.com/ru/rss/hub/artificial_intelligence/all/"
+]
+
+HISTORY_FILE = "published_history.json"
+
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
+TELEGRAM_CHANNEL_ID = os.environ.get("TELEGRAM_CHANNEL_ID")
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
+
+# ---------------------------------------------------------
+# Вспомогательные функции
+# ---------------------------------------------------------
+def load_history():
+    if os.path.exists(HISTORY_FILE):
+        try:
+            with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+                return set(json.load(f))
+        except Exception:
+            return set()
+    return set()
+
+def save_history(history):
+    recent_history = list(history)[-200:]
+    with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+        json.dump(recent_history, f, ensure_ascii=False, indent=2)
+
+def get_unique_news(history):
+    for feed_url in RSS_FEEDS:
+        feed = feedparser.parse(feed_url)
+        for entry in feed.entries:
+            link = entry.link
+            if link not in history:
+                return {
+                    "title": entry.title,
+                    "link": link,
+                    "summary": entry.get("summary", entry.get("description", ""))
+                }
+    return None
+
+def generate_ai_post_and_poll(news_item):
+    """Генерирует пост И интерактивный опрос в формате JSON"""
     url = "https://api.groq.com/openai/v1/chat/completions"
     headers = {
         "Authorization": f"Bearer {GROQ_API_KEY}",
@@ -6,51 +58,57 @@ def generate_ai_post(news_item):
     }
     
     prompt = f"""
-    Ты — главный редактор популярного IT-медиа "News AI Digest".
-    Преобразуй новость в сочный, структурированный и захватывающий пост на русском языке.
+    Ты — главный редактор IT-медиа "News AI Digest".
+    Создай пост и короткий опрос для Telegram на основе новости.
 
     Заголовок новости: {news_item['title']}
     Текст новости: {news_item['summary']}
 
-    СТРОГИЕ ПРАВИЛА:
-    1. Названия брендов, компаний и нейросетей ОСТАВЛЯЙ НА АНГЛИЙСКОМ (Claude, OpenAI, Anthropic, ChatGPT, Midjourney, Google и т.д.). Никакого транслита (НЕ ПИШИ "Клауд" или "Антропик").
-    2. Используй HTML-разметку для Telegram (<b>жирный</b>, <i>курсив</i>). Не используй символы **.
-    3. Структура поста:
-       - <b>Яркий заголовок с 1-2 эмодзи</b>
-       - Главный инфоповод (1-2 коротких предложения)
-       - <b>Key Takeaways / Что это значит:</b> (3 быстрых буллета через эмодзи)
-       - Завершающий вовлекающий вопрос к аудитории.
-       - 3-4 актуальных хэштега.
-
-    Выдавай ТОЛЬКО готовый текст поста, без вводных фраз.
+    ПРАВИЛА:
+    1. Все бренды/нейросети пиши ТОЛЬКО на английском (Claude, OpenAI, Anthropic, ChatGPT). Никакого транслита.
+    2. Используй HTML для форматирования (<b>жирный</b>). НЕ ИСПОЛЬЗУЙ **.
+    3. Выдай ответ СТРОГО в формате JSON без каких-либо лишних фраз вокруг:
+    {{
+        "post_text": "Заголовок с эмодзи\\n\\nТекст новости...\\n\\n#Claude #AI",
+        "poll_question": "Короткий вопрос для опроса (до 100 символов)",
+        "poll_option_1": "Первый вариант ответа (до 50 символов)",
+        "poll_option_2": "Второй вариант ответа (до 50 символов)"
+    }}
     """
 
     payload = {
         "model": "llama-3.1-8b-instant",
         "messages": [{"role": "user", "content": prompt}],
-        "temperature": 0.5
+        "temperature": 0.5,
+        "response_format": {"type": "json_object"}
     }
 
     try:
-        res = requests.post(url, json=payload, headers=headers, timeout=15)
+        res = requests.post(url, json=payload, headers=headers, timeout=20)
         if res.status_code == 200:
-            return res.json()['choices'][0]['message']['content']
+            return json.loads(res.json()['choices'][0]['message']['content'])
     except Exception as e:
-        print(f"Ошибка AI: {e}")
+        print(f"Ошибка AI API: {e}")
     
-    return f"🚀 <b>{news_item['title']}</b>\n\n{news_item['summary'][:300]}..."
+    # Резервный ответ
+    return {
+        "post_text": f"🚀 <b>{news_item['title']}</b>\n\n{news_item['summary'][:300]}...",
+        "poll_question": "Что думаете про эту новость?",
+        "poll_option_1": "👍 Отличные новости",
+        "poll_option_2": "👎 Сомнительно"
+    }
+
+def generate_free_image_url(prompt_text):
+    clean_prompt = f"minimalist futuristic tech design, {prompt_text[:50]}, 8k"
+    encoded_prompt = quote(clean_prompt)
+    return f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=800&height=500&nologo=true"
 
 def send_telegram_post(text, image_url, source_link):
-    """Отправка поста с интерактивной кнопкой-ссылкой на первоисточник"""
+    """Отправка поста с кнопкой-ссылкой на источник"""
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto"
     
-    # Добавляем Inline-кнопку под карточкой
     reply_markup = {
-        "inline_keyboard": [
-            [
-                {"text": "🔗 Читать первоисточник", "url": source_link}
-            ]
-        ]
+        "inline_keyboard": [[{"text": "🔗 Читать источник", "url": source_link}]]
     }
     
     payload = {
@@ -61,3 +119,43 @@ def send_telegram_post(text, image_url, source_link):
         "reply_markup": json.dumps(reply_markup)
     }
     requests.post(url, json=payload, timeout=15)
+
+def send_telegram_poll(question, option1, option2):
+    """Отправка анонимного опроса под постом"""
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPoll"
+    payload = {
+        "chat_id": TELEGRAM_CHANNEL_ID,
+        "question": question,
+        "options": json.dumps([option1, option2]),
+        "is_anonymous": True
+    }
+    requests.post(url, json=payload, timeout=15)
+
+# ---------------------------------------------------------
+# ОСНОВНОЙ ЗАПУСК
+# ---------------------------------------------------------
+if __name__ == "__main__":
+    history = load_history()
+    news = get_unique_news(history)
+
+    if news:
+        print(f"Найдена новость: {news['title']}")
+        ai_data = generate_ai_post_and_poll(news)
+        image_url = generate_free_image_url(news['title'])
+        
+        # 1. Отправляем карточку новости с кнопкой
+        send_telegram_post(ai_data['post_text'], image_url, news['link'])
+        
+        # 2. Отправляем интерактивный опрос
+        send_telegram_poll(
+            ai_data['poll_question'], 
+            ai_data['poll_option_1'], 
+            ai_data['poll_option_2']
+        )
+        
+        # 3. Сохраняем в историю
+        history.add(news['link'])
+        save_history(history)
+        print("Пост и опрос успешно опубликованы!")
+    else:
+        print("Свежих новостей пока нет.")
