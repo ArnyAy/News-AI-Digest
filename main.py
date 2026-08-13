@@ -50,7 +50,7 @@ def get_unique_news(history):
     return None
 
 def generate_ai_post_and_poll(news_item):
-    """Генерирует пост И интерактивный опрос в формате JSON"""
+    """Ггенерирует пост НА РУССКОМ и сочный опрос"""
     url = "https://api.groq.com/openai/v1/chat/completions"
     headers = {
         "Authorization": f"Bearer {GROQ_API_KEY}",
@@ -58,28 +58,37 @@ def generate_ai_post_and_poll(news_item):
     }
     
     prompt = f"""
-    Ты — главный редактор IT-медиа "News AI Digest".
-    Создай пост и короткий опрос для Telegram на основе новости.
+    Ты — шеф-редактор ведущего русскоязычного IT-медиа "News AI Digest".
+    Твоя задача: перевести английскую новость и переписать её в увлекательный пост ДЛЯ РУССКОЯЗЫЧНОЙ АУДИТОРИИ.
 
-    Заголовок новости: {news_item['title']}
-    Текст новости: {news_item['summary']}
+    Оригинальный заголовок: {news_item['title']}
+    Оригинальный текст: {news_item['summary']}
 
-    ПРАВИЛА:
-    1. Все бренды/нейросети пиши ТОЛЬКО на английском (Claude, OpenAI, Anthropic, ChatGPT). Никакого транслита.
-    2. Используй HTML для форматирования (<b>жирный</b>). НЕ ИСПОЛЬЗУЙ **.
-    3. Выдай ответ СТРОГО в формате JSON без каких-либо лишних фраз вокруг:
+    ЖЁСТКИЕ ПРАВИЛА:
+    1. ТЕКСТ ПОСТА И ОПРОС ДОЛЖНЫ БЫТЬ СТРОГО НА РУССКОМ ЯЗЫКЕ!
+    2. Все названия компаний и технологий пиши на английском без транслита (Amazon, Twitch, Claude, OpenAI, ChatGPT, Midjourney).
+    3. Используй HTML для Telegram (<b>жирный</b>). НЕ ИСПОЛЬЗУЙ **.
+    4. Структура поста:
+       - Яркий заголовок с 1-2 эмодзи
+       - Главная суть новости (2 коротких понятных абзаца)
+       - Главный вывод / Что это меняет
+       - 3-4 релевантных хэштега на русском/английском.
+    5. Формат ответа — СТРОГО JSON:
     {{
-        "post_text": "Заголовок с эмодзи\\n\\nТекст новости...\\n\\n#Claude #AI",
-        "poll_question": "Короткий вопрос для опроса (до 100 символов)",
-        "poll_option_1": "Первый вариант ответа (до 50 символов)",
-        "poll_option_2": "Второй вариант ответа (до 50 символов)"
+        "post_text": "<b>Заголовок</b>\\n\\nТекст новости на русском...\\n\\n#AI #Twitch",
+        "poll_question": "Интересный вопрос для опроса на русском (до 100 символов)",
+        "poll_option_1": "Вариант ответа 1 на русском",
+        "poll_option_2": "Вариант ответа 2 на русском"
     }}
     """
 
     payload = {
         "model": "llama-3.1-8b-instant",
-        "messages": [{"role": "user", "content": prompt}],
-        "temperature": 0.5,
+        "messages": [
+            {"role": "system", "content": "You are a professional editor writing strictly in RUSSIAN language."},
+            {"role": "user", "content": prompt}
+        ],
+        "temperature": 0.4,
         "response_format": {"type": "json_object"}
     }
 
@@ -90,7 +99,6 @@ def generate_ai_post_and_poll(news_item):
     except Exception as e:
         print(f"Ошибка AI API: {e}")
     
-    # Резервный ответ
     return {
         "post_text": f"🚀 <b>{news_item['title']}</b>\n\n{news_item['summary'][:300]}...",
         "poll_question": "Что думаете про эту новость?",
@@ -99,12 +107,12 @@ def generate_ai_post_and_poll(news_item):
     }
 
 def generate_free_image_url(prompt_text):
-    clean_prompt = f"minimalist futuristic tech design, {prompt_text[:50]}, 8k"
+    """Генерация яркой, сочной 3D/cyberpunk обложки"""
+    clean_prompt = f"vibrant colorful 3d digital render, futuristic tech concept, neon lighting, highly detailed, sharp focus, {prompt_text[:40]}"
     encoded_prompt = quote(clean_prompt)
     return f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=800&height=500&nologo=true"
 
 def send_telegram_post(text, image_url, source_link):
-    """Отправка поста с кнопкой-ссылкой на источник"""
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto"
     
     reply_markup = {
@@ -121,7 +129,6 @@ def send_telegram_post(text, image_url, source_link):
     requests.post(url, json=payload, timeout=15)
 
 def send_telegram_poll(question, option1, option2):
-    """Отправка анонимного опроса под постом"""
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPoll"
     payload = {
         "chat_id": TELEGRAM_CHANNEL_ID,
@@ -143,17 +150,14 @@ if __name__ == "__main__":
         ai_data = generate_ai_post_and_poll(news)
         image_url = generate_free_image_url(news['title'])
         
-        # 1. Отправляем карточку новости с кнопкой
         send_telegram_post(ai_data['post_text'], image_url, news['link'])
         
-        # 2. Отправляем интерактивный опрос
         send_telegram_poll(
             ai_data['poll_question'], 
             ai_data['poll_option_1'], 
             ai_data['poll_option_2']
         )
         
-        # 3. Сохраняем в историю
         history.add(news['link'])
         save_history(history)
         print("Пост и опрос успешно опубликованы!")
