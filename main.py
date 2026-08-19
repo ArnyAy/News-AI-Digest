@@ -175,9 +175,34 @@ def generate_ai_post_and_poll(news_item):
         "poll_option_2": "🤔 Сомнительно"
     }
 
-def generate_free_image_url(prompt_text):
-    clean_prompt = f"vibrant colorful 3d digital render, futuristic tech concept, neon lighting, {prompt_text[:40]}"
-    return f"https://image.pollinations.ai/prompt/{quote(clean_prompt)}?width=800&height=500&nologo=true"
+def generate_smart_image_prompt(news_title):
+    """Использует Gemini для составления детализированного арт-промпта"""
+    if not GEMINI_API_KEY:
+        return f"futuristic digital art concept representing {news_title[:50]}, 8k resolution, cinematic lighting"
+    
+    try:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
+        headers = {"Content-Type": "application/json"}
+        prompt = f"Create a short 1-sentence detailed English prompt for image generator based on this news: '{news_title}'. Style: 3D render, futuristic, glowing neon, high details. Return ONLY the prompt string, no quotes, no extra text."
+        
+        payload = {"contents": [{"parts": [{"text": prompt}]}]}
+        res = requests.post(url, json=payload, headers=headers, timeout=10)
+        if res.status_code == 200:
+            generated_prompt = res.json()['candidates'][0]['content']['parts'][0]['text'].strip()
+            return generated_prompt
+    except Exception as e:
+        print(f"⚠️ Сбой генерации промпта для картинки: {e}")
+        
+    return f"futuristic digital art, high tech concept of {news_title[:40]}, neon render, 8k resolution"
+
+def generate_free_image_url(news_title):
+    # 1. Получаемумный промпт от ИИ
+    art_prompt = generate_smart_image_prompt(news_title)
+    print(f"🎨 Сгенерированный промпт для арт-обложки: {art_prompt}")
+    
+    # 2. Формируем URL к Pollinations AI с моделью Flux
+    encoded_prompt = quote(art_prompt)
+    return f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1200&height=675&model=flux&nologo=true&seed=42"
 
 def send_telegram_post(text, image_url, source_link):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto"
@@ -189,7 +214,9 @@ def send_telegram_post(text, image_url, source_link):
         "reply_markup": json.dumps({"inline_keyboard": [[{"text": "🔗 Читать источник", "url": source_link}]]})
     }
     try:
-        requests.post(url, json=payload, timeout=15)
+        res = requests.post(url, json=payload, timeout=20)
+        if res.status_code != 200:
+            print(f"❌ Ошибка отправки поста: {res.text}")
     except Exception as e:
         print(f"Ошибка отправки поста в Telegram: {e}")
 
