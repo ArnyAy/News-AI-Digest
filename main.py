@@ -19,12 +19,13 @@ HISTORY_FILE = "published_history.json"
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 TELEGRAM_CHANNEL_ID = os.environ.get("TELEGRAM_CHANNEL_ID")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
 # ---------------------------------------------------------
 # ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
 # ---------------------------------------------------------
 def clean_html(raw_html):
-    """Удаляет HTML-теги и лишние пробелы из текста RSS"""
+    """Очищает текст от HTML-тегов и лишних пробелов"""
     if not raw_html:
         return ""
     clean_text = re.sub(r'<[^>]+>', '', raw_html)
@@ -36,8 +37,7 @@ def load_history():
         try:
             with open(HISTORY_FILE, "r", encoding="utf-8") as f:
                 return set(json.load(f))
-        except Exception as e:
-            print(f"Ошибка чтения истории: {e}")
+        except Exception:
             return set()
     return set()
 
@@ -48,14 +48,12 @@ def save_history(history):
 
 def get_unique_news(history):
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
     }
     for feed_url in RSS_FEEDS:
         try:
-            # Получаем ленту с заголовками, чтобы избежать блокировок
             response = requests.get(feed_url, headers=headers, timeout=10)
             feed = feedparser.parse(response.content)
-            
             for entry in feed.entries:
                 link = entry.link
                 if link not in history:
@@ -66,12 +64,12 @@ def get_unique_news(history):
                         "summary": clean_html(raw_summary)
                     }
         except Exception as e:
-            print(f"Ошибка при чтении ленты {feed_url}: {e}")
+            print(f"Ошибка чтения ленты {feed_url}: {e}")
             continue
     return None
 
-def generate_ai_post_and_poll(news_item):
-    """Генерирует переведенный пост НА РУССКОМ и опрос через Groq API"""
+def translate_with_groq(news_item):
+    """Основной перевод через Llama 3.3 70B"""
     url = "https://api.groq.com/openai/v1/chat/completions"
     headers = {
         "Authorization": f"Bearer {GROQ_API_KEY}",
@@ -79,78 +77,121 @@ def generate_ai_post_and_poll(news_item):
     }
     
     prompt = f"""
-Переведи и перепиши эту IT-новость НА РУССКИЙ ЯЗЫК для Telegram-канала "News AI Digest".
+Ты — главный редактор русского IT-издания.
+Переведи и адаптируй новость НА РУССКИЙ ЯЗЫК.
 
 Оригинальный заголовок: {news_item['title']}
 Оригинальный текст: {news_item['summary']}
 
-СТРОГИЕ ПРАВИЛА:
-1. ВЕСЬ ТЕКСТ, ЗАГОЛОВОК И ОПРОС ДОЛЖНЫ БЫТЬ СТРОГО НА РУССКОМ ЯЗЫКЕ!
-2. Все названия компаний и технологий оставляй на английском без транслитерации (Amazon, Twitch, Claude, OpenAI, ChatGPT, Midjourney).
-3. Используй HTML для Telegram (<b>жирный</b>). НЕ ИСПОЛЬЗУЙ Markdown (**).
-4. Формат ответа — СТРОГО JSON с указанными ключами:
+ПРАВИЛА:
+1. ВЕСЬ ТЕКСТ ПОСТА И ОПРОСА ДОЛЖЕН БЫТЬ 100% НА РУССКОМ ЯЗЫКЕ.
+2. Сохраняй бренды и названия технологий на английском (OpenAI, ChatGPT, Claude, Apple, Google).
+3. Форматирование: используй HTML (<b>жирный</b>). НЕ ИСПОЛЬЗУЙ Markdown (**).
+
+Формат ответа — СТРОГО JSON:
 {{
-  "post_text": "<b>Яркий заголовок с эмодзи на русском</b>\\n\\nГлавная суть новости на русском (2 коротких понятных абзаца).\\n\\n<b>Что это меняет:</b> Вывод на русском.\\n\\n#AI #Технологии",
-  "poll_question": "Интересный вопрос для опроса на русском (до 100 символов)",
-  "poll_option_1": "Вариант ответа 1 на русском",
-  "poll_option_2": "Вариант ответа 2 на русском"
+  "post_text": "<b>Заголовок с эмодзи на русском</b>\\n\\nГлавная суть новости на русском (2 коротких абзаца).\\n\\n<b>Что это меняет:</b> Вывод на русском.\\n\\n#AI #Технологии",
+  "poll_question": "Интересный вопрос для опроса на русском",
+  "poll_option_1": "Вариант 1 на русском",
+  "poll_option_2": "Вариант 2 на русском"
 }}
 """
 
     payload = {
-        "model": "llama-3.1-8b-instant",
+        "model": "llama-3.3-70b-versatile",
         "messages": [
             {
                 "role": "system", 
-                "content": "You are a professional Russian translator and editor. Always output valid JSON and translate everything into Russian."
+                "content": "You are a professional editor. Translate every single phrase into Russian. Do not output English sentences."
             },
             {"role": "user", "content": prompt}
         ],
-        "temperature": 0.2,
+        "temperature": 0.1,
         "response_format": {"type": "json_object"}
     }
 
-    try:
-        res = requests.post(url, json=payload, headers=headers, timeout=20)
-        if res.status_code == 200:
-            content = res.json()['choices'][0]['message']['content']
-            return json.loads(content)
-        else:
-            print(f"❌ Ошибка Groq API (Код {res.status_code}): {res.text}")
-    except Exception as e:
-        print(f"❌ Исключение при запросе к AI API: {e}")
+    res = requests.post(url, json=payload, headers=headers, timeout=25)
+    if res.status_code == 200:
+        return json.loads(res.json()['choices'][0]['message']['content'])
+    else:
+        raise Exception(f"Groq API Error {res.status_code}: {res.text}")
+
+def translate_with_gemini(news_item):
+    """Запасной перевод через Google Gemini 1.5 Flash"""
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
+    headers = {"Content-Type": "application/json"}
     
-    # Аварийный вариант (fallback), если Groq API вернул ошибку
+    prompt = f"""
+Ты — редактор русскоязычного Telegram-канала "News AI Digest". 
+Переведи эту новость полностью на русский язык и сделай из неё качественный пост.
+
+Заголовок: {news_item['title']}
+Текст: {news_item['summary']}
+
+Требования:
+1. Текст поста и варианты ответа в опросе должны быть НА РУССКОМ ЯЗЫКЕ.
+2. Используй HTML-разметку (<b>жирный</b>).
+3. Верни результат строго в формате JSON:
+
+{{
+  "post_text": "<b>Заголовок на русском</b>\\n\\nСуть новости на русском...\\n\\n#AI #Новости",
+  "poll_question": "Вопрос для опроса на русском",
+  "poll_option_1": "Вариант 1 на русском",
+  "poll_option_2": "Вариант 2 на русском"
+}}
+"""
+    
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {"response_mime_type": "application/json"}
+    }
+    
+    res = requests.post(url, json=payload, headers=headers, timeout=25)
+    if res.status_code == 200:
+        raw_text = res.json()['candidates'][0]['content']['parts'][0]['text']
+        return json.loads(raw_text)
+    else:
+        raise Exception(f"Gemini API Error {res.status_code}: {res.text}")
+
+def generate_ai_post_and_poll(news_item):
+    # 1. Сначала пробуем Groq (Llama 3.3 70B)
+    if GROQ_API_KEY:
+        try:
+            print("⏳ Запрос к Groq (Llama 3.3 70B)...")
+            return translate_with_groq(news_item)
+        except Exception as e:
+            print(f"⚠️ Groq не ответил: {e}")
+
+    # 2. Если Groq выдал ошибку — переключаемся на Gemini
+    if GEMINI_API_KEY:
+        try:
+            print("⏳ Переключение на Google Gemini...")
+            return translate_with_gemini(news_item)
+        except Exception as e:
+            print(f"⚠️ Gemini не ответил: {e}")
+
+    # 3. Резервный случай
     return {
-        "post_text": f"🤖 <b>[Ошибка перевода AI] {news_item['title']}</b>\n\nНе удалось автоматически перевести новость. Оригинальное описание:\n{news_item['summary'][:300]}...",
-        "poll_question": "Интересна ли вам эта тема?",
-        "poll_option_1": "👍 Да",
+        "post_text": f"🚀 <b>{news_item['title']}</b>\n\n{news_item['summary'][:300]}...",
+        "poll_question": "Что думаете?",
+        "poll_option_1": "👍 Интересно",
         "poll_option_2": "👎 Нет"
     }
 
 def generate_free_image_url(prompt_text):
-    """Генерация яркой 3D/cyberpunk обложки"""
-    clean_prompt = f"vibrant colorful 3d digital render, futuristic tech concept, neon lighting, highly detailed, sharp focus, {prompt_text[:40]}"
-    encoded_prompt = quote(clean_prompt)
-    return f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=800&height=500&nologo=true"
+    clean_prompt = f"vibrant colorful 3d digital render, futuristic tech concept, neon lighting, {prompt_text[:40]}"
+    return f"https://image.pollinations.ai/prompt/{quote(clean_prompt)}?width=800&height=500&nologo=true"
 
 def send_telegram_post(text, image_url, source_link):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto"
-    
-    reply_markup = {
-        "inline_keyboard": [[{"text": "🔗 Читать источник", "url": source_link}]]
-    }
-    
     payload = {
         "chat_id": TELEGRAM_CHANNEL_ID,
         "photo": image_url,
         "caption": text,
         "parse_mode": "HTML",
-        "reply_markup": json.dumps(reply_markup)
+        "reply_markup": json.dumps({"inline_keyboard": [[{"text": "🔗 Читать источник", "url": source_link}]]})
     }
-    res = requests.post(url, json=payload, timeout=15)
-    if res.status_code != 200:
-        print(f"❌ Ошибка отправки поста в Telegram: {res.text}")
+    requests.post(url, json=payload, timeout=15)
 
 def send_telegram_poll(question, option1, option2):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPoll"
@@ -160,36 +201,25 @@ def send_telegram_poll(question, option1, option2):
         "options": json.dumps([option1, option2]),
         "is_anonymous": True
     }
-    res = requests.post(url, json=payload, timeout=15)
-    if res.status_code != 200:
-        print(f"❌ Ошибка отправки опроса в Telegram: {res.text}")
+    requests.post(url, json=payload, timeout=15)
 
 # ---------------------------------------------------------
 # ОСНОВНОЙ ЗАПУСК
 # ---------------------------------------------------------
 if __name__ == "__main__":
-    if not GROQ_API_KEY or not TELEGRAM_TOKEN or not TELEGRAM_CHANNEL_ID:
-        print("❌ Ошибка: Не все переменные окружения (GROQ_API_KEY, TELEGRAM_TOKEN, TELEGRAM_CHANNEL_ID) заданы!")
-        exit(1)
-
     history = load_history()
     news = get_unique_news(history)
 
     if news:
-        print(f"Найдена новость: {news['title']}")
+        print(f"📰 Найдена новость: {news['title']}")
         ai_data = generate_ai_post_and_poll(news)
         image_url = generate_free_image_url(news['title'])
         
         send_telegram_post(ai_data['post_text'], image_url, news['link'])
-        
-        send_telegram_poll(
-            ai_data['poll_question'], 
-            ai_data['poll_option_1'], 
-            ai_data['poll_option_2']
-        )
+        send_telegram_poll(ai_data['poll_question'], ai_data['poll_option_1'], ai_data['poll_option_2'])
         
         history.add(news['link'])
         save_history(history)
-        print("Пост и опрос успешно опубликованы!")
+        print("✅ Пост и опрос успешно опубликованы!")
     else:
-        print("Свежих новостей пока нет.")
+        print("ℹ️ Свежих новостей пока нет.")
