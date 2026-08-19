@@ -32,6 +32,13 @@ def clean_html(raw_html):
     clean_text = re.sub(r'\s+', ' ', clean_text)
     return clean_text.strip()
 
+def extract_json_from_text(text):
+    """Извлекает чистый JSON из ответа модели, даже если есть лишний текст"""
+    match = re.search(r'\{.*\}', text, re.DOTALL)
+    if match:
+        return json.loads(match.group(0))
+    raise ValueError("JSON не найден в ответе ИИ")
+
 def load_history():
     if os.path.exists(HISTORY_FILE):
         try:
@@ -70,7 +77,7 @@ def get_unique_news(history):
     return None
 
 def translate_with_groq(news_item):
-    """Перевод через Groq (llama-3.3-70b-versatile)"""
+    """Основной перевод через Groq"""
     url = "https://api.groq.com/openai/v1/chat/completions"
     headers = {
         "Authorization": f"Bearer {GROQ_API_KEY}",
@@ -78,18 +85,18 @@ def translate_with_groq(news_item):
     }
     
     prompt = f"""
-Ты — главный редактор русского IT-издания "News AI Digest".
-Переведи и адаптируй новость НА РУССКИЙ ЯЗЫК.
+Ты — главный редактор русского IT-издания.
+Переведи и перепиши эту новость НА РУССКИЙ ЯЗЫК.
 
-Заголовок: {news_item['title']}
-Текст: {news_item['summary']}
+Оригинальный заголовок: {news_item['title']}
+Оригинальный текст: {news_item['summary']}
 
-ПРАВИЛА:
+СТРОГИЕ ТРЕБОВАНИЯ:
 1. ВЕСЬ ТЕКСТ ПОСТА И ОПРОС ДОЛЖНЫ БЫТЬ 100% НА РУССКОМ ЯЗЫКЕ.
-2. Сохраняй названия компаний и продуктов на английском (Apple, OpenAI, Google).
-3. Используй разметку HTML (<b>жирный</b>). НЕ ИСПОЛЬЗУЙ Markdown (**).
+2. Сохраняй названия компаний и технологий на английском (OpenAI, ChatGPT, Claude, Apple).
+3. Используй разметку HTML (<b>жирный</b>). НЕ ИСПОЛЬЗУЙ Markdown.
 
-Верни JSON строго по следующей структуре:
+Формат ответа — СТРОГО JSON:
 {{
   "post_text": "<b>Заголовок на русском с эмодзи</b>\\n\\nГлавная суть новости на русском (2 коротких понятных абзаца).\\n\\n<b>Что это меняет:</b> Вывод на русском.\\n\\n#AI #Технологии",
   "poll_question": "Интересный вопрос для опроса на русском (до 100 символов)",
@@ -101,83 +108,69 @@ def translate_with_groq(news_item):
     payload = {
         "model": "llama-3.3-70b-versatile",
         "messages": [
-            {
-                "role": "system", 
-                "content": "You are a professional translator. Respond only with valid JSON containing Russian text."
-            },
+            {"role": "system", "content": "You output strictly JSON in Russian language."},
             {"role": "user", "content": prompt}
         ],
-        "temperature": 0.2,
-        "response_format": {"type": "json_object"}
+        "temperature": 0.2
     }
 
     res = requests.post(url, json=payload, headers=headers, timeout=25)
     if res.status_code == 200:
         content = res.json()['choices'][0]['message']['content']
-        return json.loads(content)
+        return extract_json_from_text(content)
     else:
-        raise Exception(f"Status {res.status_code}: {res.text}")
+        raise Exception(f"Groq HTTP {res.status_code}: {res.text}")
 
 def translate_with_gemini(news_item):
-    """Исправленный перевод через Google Gemini 1.5 Flash"""
+    """Резервный перевод через Google Gemini API v1beta (обновлённый эндпоинт)"""
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
     headers = {"Content-Type": "application/json"}
     
     prompt = f"""
-Ты — редактор Telegram-канала "News AI Digest". 
-Переведи эту новость полностью на русский язык.
+Ты — редактор Telegram-канала "News AI Digest". Переведи новость на русский язык.
 
 Заголовок: {news_item['title']}
 Текст: {news_item['summary']}
 
-Верни результат СТРОГО в формате JSON со следующими полями:
-- post_text (строка с HTML-разметкой <b>жирный</b>, заголовок, текст и хэштеги на русском)
-- poll_question (строка с вопросом на русском)
-- poll_option_1 (строка с вариантом ответа 1 на русском)
-- poll_option_2 (строка с вариантом ответа 2 на русском)
+Верни результат ИСКЛЮЧИТЕЛЬНО в формате JSON без каких-либо вводных слов:
+{{
+  "post_text": "<b>Заголовок на русском с эмодзи</b>\\n\\nСуть новости на русском...\\n\\n#AI #Новости",
+  "poll_question": "Вопрос для опроса на русском",
+  "poll_option_1": "Вариант 1 на русском",
+  "poll_option_2": "Вариант 2 на русском"
+}}
 """
     
     payload = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {
-            "response_mime_type": "application/json"
-        }
+        "contents": [{"parts": [{"text": prompt}]}]
     }
     
     res = requests.post(url, json=payload, headers=headers, timeout=25)
     if res.status_code == 200:
         raw_text = res.json()['candidates'][0]['content']['parts'][0]['text']
-        # Очистка возможных знаков ```json ... ``` из ответа Gemini
-        clean_json_str = re.sub(r'```json\s*|\s*```', '', raw_text).strip()
-        return json.loads(clean_json_str)
+        return extract_json_from_text(raw_text)
     else:
-        raise Exception(f"Status {res.status_code}: {res.text}")
+        raise Exception(f"Gemini HTTP {res.status_code}: {res.text}")
 
 def generate_ai_post_and_poll(news_item):
-    # 1. Попытка через Groq
+    # 1. Запрос к Groq
     if GROQ_API_KEY:
         try:
-            print("⏳ Запрос к Groq API (llama-3.3-70b-versatile)...")
+            print("⏳ Запрос к Groq...")
             return translate_with_groq(news_item)
         except Exception as e:
-            print(f"❌ Ошибка Groq API: {e}")
+            print(f"⚠️ Groq не сработал: {e}")
 
-    # 2. Попытка через Gemini
+    # 2. Запрос к Gemini
     if GEMINI_API_KEY:
         try:
-            print("⏳ Запрос к Google Gemini API...")
+            print("⏳ Переключение на Google Gemini...")
             return translate_with_gemini(news_item)
         except Exception as e:
-            print(f"❌ Ошибка Gemini API: {e}")
+            print(f"⚠️ Gemini не сработал: {e}")
 
-    # 3. Аварийный вариант
-    print("⚠️ Ошибка всех ИИ. Используется резервный блок.")
-    return {
-        "post_text": f"🚀 <b>{news_item['title']}</b>\n\n{news_item['summary'][:300]}...",
-        "poll_question": "Что думаете про эту новость?",
-        "poll_option_1": "👍 Интересно",
-        "poll_option_2": "👎 Нет"
-    }
+    # Если ни один API не ответил — возбуждаем ошибку, чтобы увидеть логи в GitHub Actions
+    raise RuntimeError("❌ Ошибка: Ни Groq, ни Gemini API не смогли перевести новость. Проверьте секреты (API keys) в GitHub!")
 
 def generate_free_image_url(prompt_text):
     clean_prompt = f"vibrant colorful 3d digital render, futuristic tech concept, neon lighting, {prompt_text[:40]}"
@@ -194,7 +187,7 @@ def send_telegram_post(text, image_url, source_link):
     }
     res = requests.post(url, json=payload, timeout=15)
     if res.status_code != 200:
-        print(f"❌ Ошибка отправки поста в Telegram: {res.text}")
+        print(f"❌ Ошибка отправки поста: {res.text}")
 
 def send_telegram_poll(question, option1, option2):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPoll"
@@ -206,7 +199,7 @@ def send_telegram_poll(question, option1, option2):
     }
     res = requests.post(url, json=payload, timeout=15)
     if res.status_code != 200:
-        print(f"❌ Ошибка отправки опроса в Telegram: {res.text}")
+        print(f"❌ Ошибка отправки опроса: {res.text}")
 
 # ---------------------------------------------------------
 # ОСНОВНОЙ ЗАПУСК
