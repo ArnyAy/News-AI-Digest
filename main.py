@@ -70,7 +70,7 @@ def get_unique_news(history):
     return None
 
 def translate_with_groq(news_item):
-    """Основной перевод через рабочую модель Llama 3.3 70B"""
+    """Перевод через Groq (llama-3.3-70b-versatile)"""
     url = "https://api.groq.com/openai/v1/chat/completions"
     headers = {
         "Authorization": f"Bearer {GROQ_API_KEY}",
@@ -78,18 +78,18 @@ def translate_with_groq(news_item):
     }
     
     prompt = f"""
-Ты — главный редактор русского IT-издания.
-Переведи и перепиши эту новость НА РУССКИЙ ЯЗЫК.
+Ты — главный редактор русского IT-издания "News AI Digest".
+Переведи и адаптируй новость НА РУССКИЙ ЯЗЫК.
 
-Оригинальный заголовок: {news_item['title']}
-Оригинальный текст: {news_item['summary']}
+Заголовок: {news_item['title']}
+Текст: {news_item['summary']}
 
-СТРОГИЕ ПРАВИЛА:
+ПРАВИЛА:
 1. ВЕСЬ ТЕКСТ ПОСТА И ОПРОС ДОЛЖНЫ БЫТЬ 100% НА РУССКОМ ЯЗЫКЕ.
-2. Сохраняй названия компаний и продуктов на английском (Calendly, OpenAI, ChatGPT, Claude, Apple).
+2. Сохраняй названия компаний и продуктов на английском (Apple, OpenAI, Google).
 3. Используй разметку HTML (<b>жирный</b>). НЕ ИСПОЛЬЗУЙ Markdown (**).
 
-Формат ответа — СТРОГО JSON:
+Верни JSON строго по следующей структуре:
 {{
   "post_text": "<b>Заголовок на русском с эмодзи</b>\\n\\nГлавная суть новости на русском (2 коротких понятных абзаца).\\n\\n<b>Что это меняет:</b> Вывод на русском.\\n\\n#AI #Технологии",
   "poll_question": "Интересный вопрос для опроса на русском (до 100 символов)",
@@ -103,7 +103,7 @@ def translate_with_groq(news_item):
         "messages": [
             {
                 "role": "system", 
-                "content": "You are a professional Russian translator. Output valid JSON in Russian language only."
+                "content": "You are a professional translator. Respond only with valid JSON containing Russian text."
             },
             {"role": "user", "content": prompt}
         ],
@@ -116,59 +116,62 @@ def translate_with_groq(news_item):
         content = res.json()['choices'][0]['message']['content']
         return json.loads(content)
     else:
-        raise Exception(f"Groq API Error {res.status_code}: {res.text}")
+        raise Exception(f"Status {res.status_code}: {res.text}")
 
 def translate_with_gemini(news_item):
-    """Резервный перевод через Google Gemini 1.5 Flash"""
+    """Исправленный перевод через Google Gemini 1.5 Flash"""
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
     headers = {"Content-Type": "application/json"}
     
     prompt = f"""
-Ты — редактор Telegram-канала "News AI Digest". Переведи новость полностью на русский язык.
+Ты — редактор Telegram-канала "News AI Digest". 
+Переведи эту новость полностью на русский язык.
 
 Заголовок: {news_item['title']}
 Текст: {news_item['summary']}
 
-Верни строго JSON:
-{{
-  "post_text": "<b>Заголовок на русском</b>\\n\\nСуть новости на русском...\\n\\n#AI #Новости",
-  "poll_question": "Вопрос для опроса на русском",
-  "poll_option_1": "Вариант 1 на русском",
-  "poll_option_2": "Вариант 2 на русском"
-}}
+Верни результат СТРОГО в формате JSON со следующими полями:
+- post_text (строка с HTML-разметкой <b>жирный</b>, заголовок, текст и хэштеги на русском)
+- poll_question (строка с вопросом на русском)
+- poll_option_1 (строка с вариантом ответа 1 на русском)
+- poll_option_2 (строка с вариантом ответа 2 на русском)
 """
     
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"response_mime_type": "application/json"}
+        "generationConfig": {
+            "response_mime_type": "application/json"
+        }
     }
     
     res = requests.post(url, json=payload, headers=headers, timeout=25)
     if res.status_code == 200:
         raw_text = res.json()['candidates'][0]['content']['parts'][0]['text']
-        return json.loads(raw_text)
+        # Очистка возможных знаков ```json ... ``` из ответа Gemini
+        clean_json_str = re.sub(r'```json\s*|\s*```', '', raw_text).strip()
+        return json.loads(clean_json_str)
     else:
-        raise Exception(f"Gemini API Error {res.status_code}: {res.text}")
+        raise Exception(f"Status {res.status_code}: {res.text}")
 
 def generate_ai_post_and_poll(news_item):
     # 1. Попытка через Groq
     if GROQ_API_KEY:
         try:
-            print("⏳ Запрос к Groq (llama-3.3-70b-versatile)...")
+            print("⏳ Запрос к Groq API (llama-3.3-70b-versatile)...")
             return translate_with_groq(news_item)
         except Exception as e:
-            print(f"⚠️ Ошибка Groq: {e}")
+            print(f"❌ Ошибка Groq API: {e}")
 
     # 2. Попытка через Gemini
     if GEMINI_API_KEY:
         try:
-            print("⏳ Переключение на Google Gemini...")
+            print("⏳ Запрос к Google Gemini API...")
             return translate_with_gemini(news_item)
         except Exception as e:
-            print(f"⚠️ Ошибка Gemini: {e}")
+            print(f"❌ Ошибка Gemini API: {e}")
 
     # 3. Аварийный вариант
-    print("❌ Все ИИ недоступны. Используем резервный вариант.")
+    print("⚠️ Ошибка всех ИИ. Используется резервный блок.")
     return {
         "post_text": f"🚀 <b>{news_item['title']}</b>\n\n{news_item['summary'][:300]}...",
         "poll_question": "Что думаете про эту новость?",
@@ -191,7 +194,7 @@ def send_telegram_post(text, image_url, source_link):
     }
     res = requests.post(url, json=payload, timeout=15)
     if res.status_code != 200:
-        print(f"❌ Ошибка отправки в Telegram: {res.text}")
+        print(f"❌ Ошибка отправки поста в Telegram: {res.text}")
 
 def send_telegram_poll(question, option1, option2):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPoll"
@@ -203,7 +206,7 @@ def send_telegram_poll(question, option1, option2):
     }
     res = requests.post(url, json=payload, timeout=15)
     if res.status_code != 200:
-        print(f"❌ Ошибка отправки опроса: {res.text}")
+        print(f"❌ Ошибка отправки опроса в Telegram: {res.text}")
 
 # ---------------------------------------------------------
 # ОСНОВНОЙ ЗАПУСК
