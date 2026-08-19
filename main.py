@@ -176,14 +176,22 @@ def generate_ai_post_and_poll(news_item):
     }
 
 def generate_smart_image_prompt(news_title):
-    """Использует Gemini для составления детализированного арт-промпта"""
+    """Генерирует сюжетный промпт в стиле мультиков Pixar/Disney"""
     if not GEMINI_API_KEY:
-        return f"futuristic digital art concept representing {news_title[:50]}, 8k resolution, cinematic lighting"
+        return f"cute Pixar 3D animated character representing {news_title[:40]}, Disney animation style, vibrant colors, expressive character, detailed environment"
     
     try:
         url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
         headers = {"Content-Type": "application/json"}
-        prompt = f"Create a short 1-sentence detailed English prompt for image generator based on this news: '{news_title}'. Style: 3D render, futuristic, glowing neon, high details. Return ONLY the prompt string, no quotes, no extra text."
+        
+        prompt = f"""
+На основе новости: "{news_title}" придумай промпт для генерации картинки В СТИЛЕ МУЛЬТФИЛЬМОВ PIXAR / DISNEY / 3D ANIMATION.
+
+Требования:
+1. Придумай конкретного милого персонажа или предмет (например: робот, персонаж, метафора новости), который что-то делает.
+2. Стиль: "Pixar 3D animation style, Disney, cute character, vibrant bright colors, expressive faces, octane render, highly detailed, soft lighting".
+3. Ответ должен быть СТРОГО на английском языке, ровно 1 предложение. Без кавычек, без вводных слов.
+"""
         
         payload = {"contents": [{"parts": [{"text": prompt}]}]}
         res = requests.post(url, json=payload, headers=headers, timeout=10)
@@ -193,16 +201,14 @@ def generate_smart_image_prompt(news_title):
     except Exception as e:
         print(f"⚠️ Сбой генерации промпта для картинки: {e}")
         
-    return f"futuristic digital art, high tech concept of {news_title[:40]}, neon render, 8k resolution"
+    return f"cute Pixar 3D animated character working on high tech factory, vibrant colors, highly detailed, disney animation style"
 
 def generate_free_image_url(news_title):
-    # 1. Получаемумный промпт от ИИ
     art_prompt = generate_smart_image_prompt(news_title)
-    print(f"🎨 Сгенерированный промпт для арт-обложки: {art_prompt}")
+    print(f"🎨 Мультяшный промпт: {art_prompt}")
     
-    # 2. Формируем URL к Pollinations AI с моделью Flux
-    encoded_prompt = quote(art_prompt)
-    return f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1200&height=675&model=flux&nologo=true&seed=42"
+    encoded_prompt = quote(f"{art_prompt}, masterpiece, 8k")
+    return f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1200&height=675&model=flux&nologo=true"
 
 def send_telegram_post(text, image_url, source_link):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto"
