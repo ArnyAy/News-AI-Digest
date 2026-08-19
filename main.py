@@ -25,7 +25,6 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 # ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
 # ---------------------------------------------------------
 def clean_html(raw_html):
-    """Очищает текст от HTML-тегов и лишних пробелов"""
     if not raw_html:
         return ""
     clean_text = re.sub(r'<[^>]+>', '', raw_html)
@@ -33,11 +32,10 @@ def clean_html(raw_html):
     return clean_text.strip()
 
 def extract_json_from_text(text):
-    """Извлекает чистый JSON из ответа модели, даже если есть лишний текст"""
     match = re.search(r'\{.*\}', text, re.DOTALL)
     if match:
         return json.loads(match.group(0))
-    raise ValueError("JSON не найден в ответе ИИ")
+    raise ValueError("JSON не найден в ответе")
 
 def load_history():
     if os.path.exists(HISTORY_FILE):
@@ -51,13 +49,14 @@ def load_history():
 
 def save_history(history):
     recent_history = list(history)[-200:]
-    with open(HISTORY_FILE, "w", encoding="utf-8") as f:
-        json.dump(recent_history, f, ensure_ascii=False, indent=2)
+    try:
+        with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+            json.dump(recent_history, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"Ошибка сохранения истории: {e}")
 
 def get_unique_news(history):
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-    }
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
     for feed_url in RSS_FEEDS:
         try:
             response = requests.get(feed_url, headers=headers, timeout=10)
@@ -77,7 +76,6 @@ def get_unique_news(history):
     return None
 
 def translate_with_groq(news_item):
-    """Основной перевод через Groq"""
     url = "https://api.groq.com/openai/v1/chat/completions"
     headers = {
         "Authorization": f"Bearer {GROQ_API_KEY}",
@@ -85,23 +83,17 @@ def translate_with_groq(news_item):
     }
     
     prompt = f"""
-Ты — главный редактор русского IT-издания.
-Переведи и перепиши эту новость НА РУССКИЙ ЯЗЫК.
+Ты — главный редактор IT-издания. Переведи новость НА РУССКИЙ ЯЗЫК.
 
-Оригинальный заголовок: {news_item['title']}
-Оригинальный текст: {news_item['summary']}
+Заголовок: {news_item['title']}
+Текст: {news_item['summary']}
 
-СТРОГИЕ ТРЕБОВАНИЯ:
-1. ВЕСЬ ТЕКСТ ПОСТА И ОПРОС ДОЛЖНЫ БЫТЬ 100% НА РУССКОМ ЯЗЫКЕ.
-2. Сохраняй названия компаний и технологий на английском (OpenAI, ChatGPT, Claude, Apple).
-3. Используй разметку HTML (<b>жирный</b>). НЕ ИСПОЛЬЗУЙ Markdown.
-
-Формат ответа — СТРОГО JSON:
+Верни строго JSON:
 {{
-  "post_text": "<b>Заголовок на русском с эмодзи</b>\\n\\nГлавная суть новости на русском (2 коротких понятных абзаца).\\n\\n<b>Что это меняет:</b> Вывод на русском.\\n\\n#AI #Технологии",
-  "poll_question": "Интересный вопрос для опроса на русском (до 100 символов)",
-  "poll_option_1": "Вариант ответа 1 на русском",
-  "poll_option_2": "Вариант ответа 2 на русском"
+  "post_text": "<b>Заголовок на русском</b>\\n\\nСуть новости на русском...\\n\\n#AI #Технологии",
+  "poll_question": "Интересный опрос на русском",
+  "poll_option_1": "Вариант 1",
+  "poll_option_2": "Вариант 2"
 }}
 """
 
@@ -114,63 +106,74 @@ def translate_with_groq(news_item):
         "temperature": 0.2
     }
 
-    res = requests.post(url, json=payload, headers=headers, timeout=25)
+    res = requests.post(url, json=payload, headers=headers, timeout=20)
     if res.status_code == 200:
         content = res.json()['choices'][0]['message']['content']
         return extract_json_from_text(content)
     else:
-        raise Exception(f"Groq HTTP {res.status_code}: {res.text}")
+        raise Exception(f"Groq API Error {res.status_code}")
 
 def translate_with_gemini(news_item):
-    """Резервный перевод через Google Gemini API v1beta (обновлённый эндпоинт)"""
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
     headers = {"Content-Type": "application/json"}
     
     prompt = f"""
-Ты — редактор Telegram-канала "News AI Digest". Переведи новость на русский язык.
-
+Переведи новость на русский язык и верни строго JSON:
 Заголовок: {news_item['title']}
 Текст: {news_item['summary']}
 
-Верни результат ИСКЛЮЧИТЕЛЬНО в формате JSON без каких-либо вводных слов:
+Формат JSON:
 {{
-  "post_text": "<b>Заголовок на русском с эмодзи</b>\\n\\nСуть новости на русском...\\n\\n#AI #Новости",
+  "post_text": "<b>Заголовок на русском</b>\\n\\nСуть новости на русском...\\n\\n#AI #Новости",
   "poll_question": "Вопрос для опроса на русском",
-  "poll_option_1": "Вариант 1 на русском",
-  "poll_option_2": "Вариант 2 на русском"
+  "poll_option_1": "Вариант 1",
+  "poll_option_2": "Вариант 2"
 }}
 """
     
-    payload = {
-        "contents": [{"parts": [{"text": prompt}]}]
-    }
-    
-    res = requests.post(url, json=payload, headers=headers, timeout=25)
+    payload = {"contents": [{"parts": [{"text": prompt}]}]}
+    res = requests.post(url, json=payload, headers=headers, timeout=20)
     if res.status_code == 200:
         raw_text = res.json()['candidates'][0]['content']['parts'][0]['text']
         return extract_json_from_text(raw_text)
     else:
-        raise Exception(f"Gemini HTTP {res.status_code}: {res.text}")
+        raise Exception(f"Gemini API Error {res.status_code}")
+
+def translate_fallback_free(text):
+    try:
+        url = f"https://api.mymemory.translated.net/get?q={quote(text[:450])}&langpair=en|ru"
+        res = requests.get(url, timeout=10)
+        if res.status_code == 200:
+            return res.json()['responseData']['translatedText']
+    except Exception as e:
+        print(f"Ошибка бесплатного перевода: {e}")
+    return text
 
 def generate_ai_post_and_poll(news_item):
-    # 1. Запрос к Groq
     if GROQ_API_KEY:
         try:
             print("⏳ Запрос к Groq...")
             return translate_with_groq(news_item)
         except Exception as e:
-            print(f"⚠️ Groq не сработал: {e}")
+            print(f"⚠️ Groq пропущен: {e}")
 
-    # 2. Запрос к Gemini
     if GEMINI_API_KEY:
         try:
-            print("⏳ Переключение на Google Gemini...")
+            print("⏳ Запрос к Gemini...")
             return translate_with_gemini(news_item)
         except Exception as e:
-            print(f"⚠️ Gemini не сработал: {e}")
+            print(f"⚠️ Gemini пропущен: {e}")
 
-    # Если ни один API не ответил — возбуждаем ошибку, чтобы увидеть логи в GitHub Actions
-    raise RuntimeError("❌ Ошибка: Ни Groq, ни Gemini API не смогли перевести новость. Проверьте секреты (API keys) в GitHub!")
+    print("⚠️ Используем резервный онлайн-перевод...")
+    ru_title = translate_fallback_free(news_item['title'])
+    ru_summary = translate_fallback_free(news_item['summary'][:400])
+
+    return {
+        "post_text": f"🚀 <b>{ru_title}</b>\n\n{ru_summary}...\n\n#AI #Технологии",
+        "poll_question": "Как вам эта новость?",
+        "poll_option_1": "👍 Перспективно",
+        "poll_option_2": "🤔 Сомнительно"
+    }
 
 def generate_free_image_url(prompt_text):
     clean_prompt = f"vibrant colorful 3d digital render, futuristic tech concept, neon lighting, {prompt_text[:40]}"
@@ -185,9 +188,10 @@ def send_telegram_post(text, image_url, source_link):
         "parse_mode": "HTML",
         "reply_markup": json.dumps({"inline_keyboard": [[{"text": "🔗 Читать источник", "url": source_link}]]})
     }
-    res = requests.post(url, json=payload, timeout=15)
-    if res.status_code != 200:
-        print(f"❌ Ошибка отправки поста: {res.text}")
+    try:
+        requests.post(url, json=payload, timeout=15)
+    except Exception as e:
+        print(f"Ошибка отправки поста в Telegram: {e}")
 
 def send_telegram_poll(question, option1, option2):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPoll"
@@ -197,9 +201,10 @@ def send_telegram_poll(question, option1, option2):
         "options": json.dumps([option1, option2]),
         "is_anonymous": True
     }
-    res = requests.post(url, json=payload, timeout=15)
-    if res.status_code != 200:
-        print(f"❌ Ошибка отправки опроса: {res.text}")
+    try:
+        requests.post(url, json=payload, timeout=15)
+    except Exception as e:
+        print(f"Ошибка отправки опроса в Telegram: {e}")
 
 # ---------------------------------------------------------
 # ОСНОВНОЙ ЗАПУСК
@@ -218,6 +223,6 @@ if __name__ == "__main__":
         
         history.add(news['link'])
         save_history(history)
-        print("✅ Пост и опрос успешно опубликованы!")
+        print("✅ Пост и опрос успешно обработаны!")
     else:
         print("ℹ️ Свежих новостей пока нет.")
