@@ -1,6 +1,8 @@
 import os
 import json
 import re
+import random
+import time
 import requests
 import feedparser
 from urllib.parse import quote
@@ -207,8 +209,14 @@ def generate_free_image_url(news_title):
     art_prompt = generate_smart_image_prompt(news_title)
     print(f"🎨 Мультяшный промпт: {art_prompt}")
     
+    # 1. Генерируем уникальный seed и timestamp для предотвращения кэширования
+    seed = random.randint(1, 999999)
+    ts = int(time.time())
+    
     encoded_prompt = quote(f"{art_prompt}, masterpiece, 8k")
-    return f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1200&height=675&model=flux&nologo=true"
+    
+    # 2. Передаем seed и дополнительный параметр cb (cache buster)
+    return f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1200&height=675&model=flux&nologo=true&seed={seed}&cb={ts}"
 
 def send_telegram_post(text, image_url, source_link):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto"
